@@ -241,6 +241,12 @@ const UIStrings = {
   */
   copyAsNodejsFetch: 'Copy as `Node.js` `fetch`',
   /**
+  * @description Text in Network Log View of the Network panel. An action that copies a command to
+  * the developer's clipboard. The command allows the developer to replay this specific network
+  * request using the Python programming language with the requests library.
+  */
+  copyAsPythonRequests: 'Copy as `Python` (`requests`)',
+  /**
   *@description Text in Network Log View of the Network panel. An action that copies a command to
   *the clipboard. It will copy the command in the format compatible with cURL (a program, not
   *translatable).
@@ -268,6 +274,12 @@ const UIStrings = {
   *(fetch and Node.js should not be translated).
   */
   copyAllAsNodejsFetch: 'Copy all as `Node.js` `fetch`',
+  /**
+  *@description Text in Network Log View of the Network panel. An action that copies a command to
+  *the clipboard. It will copy the command in the format compatible with a Python program using
+  *the requests library (Python and requests should not be translated).
+  */
+  copyAllAsPythonRequests: 'Copy all as `Python` (`requests`)',
   /**
   *@description Text in Network Log View of the Network panel. An action that copies a command to
   *the clipboard. It will copy the command in the format compatible with cURL (a program, not
@@ -1503,12 +1515,17 @@ export class NetworkLogView extends UI.Widget.VBox implements
         footerSection.appendItem(
             i18nString(UIStrings.copyAsNodejsFetch), this._copyFetchCall.bind(this, request, true), disableIfBlob);
         footerSection.appendItem(
+            i18nString(UIStrings.copyAsPythonRequests), this._copyPythonRequestsScript.bind(this, request),
+            disableIfBlob);
+        footerSection.appendItem(
             i18nString(UIStrings.copyAsCurlCmd), this._copyCurlCommand.bind(this, request, 'win'), disableIfBlob);
         footerSection.appendItem(
             i18nString(UIStrings.copyAsCurlBash), this._copyCurlCommand.bind(this, request, 'unix'), disableIfBlob);
         footerSection.appendItem(i18nString(UIStrings.copyAllAsPowershell), this._copyAllPowerShellCommand.bind(this));
         footerSection.appendItem(i18nString(UIStrings.copyAllAsFetch), this._copyAllFetchCall.bind(this, false));
         footerSection.appendItem(i18nString(UIStrings.copyAllAsNodejsFetch), this._copyAllFetchCall.bind(this, true));
+        footerSection.appendItem(
+            i18nString(UIStrings.copyAllAsPythonRequests), this._copyAllPythonRequestsScript.bind(this));
         footerSection.appendItem(i18nString(UIStrings.copyAllAsCurlCmd), this._copyAllCurlCommand.bind(this, 'win'));
         footerSection.appendItem(i18nString(UIStrings.copyAllAsCurlBash), this._copyAllCurlCommand.bind(this, 'unix'));
       } else {
@@ -1517,9 +1534,14 @@ export class NetworkLogView extends UI.Widget.VBox implements
         footerSection.appendItem(
             i18nString(UIStrings.copyAsNodejsFetch), this._copyFetchCall.bind(this, request, true), disableIfBlob);
         footerSection.appendItem(
+            i18nString(UIStrings.copyAsPythonRequests), this._copyPythonRequestsScript.bind(this, request),
+            disableIfBlob);
+        footerSection.appendItem(
             i18nString(UIStrings.copyAsCurl), this._copyCurlCommand.bind(this, request, 'unix'), disableIfBlob);
         footerSection.appendItem(i18nString(UIStrings.copyAllAsFetch), this._copyAllFetchCall.bind(this, false));
         footerSection.appendItem(i18nString(UIStrings.copyAllAsNodejsFetch), this._copyAllFetchCall.bind(this, true));
+        footerSection.appendItem(
+            i18nString(UIStrings.copyAllAsPythonRequests), this._copyAllPythonRequestsScript.bind(this));
         footerSection.appendItem(i18nString(UIStrings.copyAllAsCurl), this._copyAllCurlCommand.bind(this, 'unix'));
       }
     } else {
@@ -1610,6 +1632,16 @@ export class NetworkLogView extends UI.Widget.VBox implements
 
   async _copyAllFetchCall(includeCookies: boolean): Promise<void> {
     const commands = await this._generateAllFetchCall(Logs.NetworkLog.NetworkLog.instance().requests(), includeCookies);
+    Host.InspectorFrontendHost.InspectorFrontendHostInstance.copyText(commands);
+  }
+
+  async _copyPythonRequestsScript(request: SDK.NetworkRequest.NetworkRequest): Promise<void> {
+    const command = await this._generatePythonRequestsScript(request);
+    Host.InspectorFrontendHost.InspectorFrontendHostInstance.copyText(command);
+  }
+
+  async _copyAllPythonRequestsScript(): Promise<void> {
+    const commands = await this._generateAllPythonRequestsScript(Logs.NetworkLog.NetworkLog.instance().requests());
     Host.InspectorFrontendHost.InspectorFrontendHostInstance.copyText(commands);
   }
 
@@ -1969,6 +2001,58 @@ export class NetworkLogView extends UI.Widget.VBox implements
     const commands =
         await Promise.all(nonBlobRequests.map(request => this._generateFetchCall(request, includeCookies)));
     return commands.join(' ;\n');
+  }
+
+  async _generatePythonRequestsScript(request: SDK.NetworkRequest.NetworkRequest): Promise<string> {
+    const ignoredHeaders = new Set<string>(['accept-encoding', 'host', 'method', 'path', 'scheme', 'version']);
+
+    const pythonify = JSON.stringify;  // TODO
+
+    const url = pythonify(request.url());
+
+    const requestHeaders = request.requestHeaders();
+    const headerData: Headers = requestHeaders.reduce((result, header) => {
+      const name = header.name;
+
+      if (!ignoredHeaders.has(name.toLowerCase()) && !name.includes(':')) {
+        result.append(name, header.value);
+      }
+
+      return result;
+    }, new Headers());
+    const headers: HeadersInit = {};
+    for (const headerArray of headerData) {
+      headers[headerArray[0]] = headerArray[1];
+    }
+
+    const requestBody = await request.requestFormData();
+
+
+    // https://github.com/psf/requests/blob/1466ad713cf84738cd28f1224a7ab4a19e50e361/requests/__init__.py#L121
+    const requestsMethods = ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'];
+    const [fn, args] = requestsMethods.includes(request.requestMethod) ?
+        [request.requestMethod.toLowerCase(), []] :
+        ['request', [pythonify(request.requestMethod)]];
+
+    args.push(url);
+
+    if (requestBody) {
+      args.push('data=' + pythonify(requestBody, null, 2));
+    }
+    if (Object.keys(headers).length) {
+      args.push('headers=' + pythonify(headers, null, 2));
+    }
+    if (request.securityState() === Protocol.Security.SecurityState.Insecure) {
+      args.push('verify=False');
+    }
+
+    return `requests.${fn}(${args.join(', ')})`;
+  }
+
+  async _generateAllPythonRequestsScript(requests: SDK.NetworkRequest.NetworkRequest[]): Promise<string> {
+    const nonBlobRequests = this._filterOutBlobRequests(requests);
+    const commands = await Promise.all(nonBlobRequests.map(request => this._generatePythonRequestsScript(request)));
+    return commands.join('\n');
   }
 
   async _generateCurlCommand(request: SDK.NetworkRequest.NetworkRequest, platform: string): Promise<string> {
